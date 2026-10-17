@@ -4,11 +4,18 @@
 //
 //   bench_hip --info | --list
 //   bench_hip [--config TSM,TSN,TSK,WPTM,WPTN[,contig]]... [--grid] [--all] [--n N]...
-//             [--reps R] [--csv FILE] [--no-check] [--tol X] [--seed S]
+//             [--reps R] [--csv FILE] [--no-check] [--tol X] [--seed S] [--blocking]
 //   bench_hip --rocblas --n N... [--csv FILE]            library ceiling (AMD only)
 //   bench_hip --bandwidth [--csv FILE]                   copy kernel, GB/s at several sizes
 //   bench_hip --fma [--csv FILE]                         FMA throughput kernel
-//   bench_hip --clock [--config ...] [--n N]             shader clock while GEMM runs
+//   bench_hip --clock [--config ... --n N | --fma] [--seconds S] [--interval S]
+//                                                        shader clock, idle or under load (3 s);
+//                                                        with --interval, a low-duty monitor to run
+//                                                        beside another process's workload
+//
+// The host spin-waits for the GPU (HIP's default) unless --blocking is given (see
+// set_blocking_sync). Under ROCm on WSL, four host threads stay at 100% while a kernel runs either
+// way (top -H), and the two modes measured within 2% of each other.
 //
 // Exit codes: 0 ok, 1 failed check or HIP error, 2 bad arguments, 3 nothing runnable.
 
@@ -47,6 +54,9 @@ struct Options {
   double tol = 1e-4;
   bool check = true;
   bool info = false, list = false, rocblas = false, bandwidth = false, fma = false, clock = false;
+  bool blocking = false;  // --blocking: sleep in waits instead of HIP's default spinning
+  double interval = 0.0;  // --interval: seconds between clock samples
+  double seconds = 3.0;  // --clock duration
 };
 
 [[noreturn]] void usage_error(const std::string& msg) {
@@ -79,6 +89,9 @@ Options parse(int argc, char** argv) {
       else if (a == "--bandwidth") o.bandwidth = true;
       else if (a == "--fma") o.fma = true;
       else if (a == "--clock") o.clock = true;
+      else if (a == "--blocking") o.blocking = true;
+      else if (a == "--interval") o.interval = std::stod(next());
+      else if (a == "--seconds") o.seconds = std::stod(next());
       else usage_error("unknown flag " + a);
     } catch (const std::invalid_argument& e) {
       usage_error(e.what());
@@ -93,6 +106,17 @@ double median(std::vector<double> v) {
   std::sort(v.begin(), v.end());
   const std::size_t m = v.size() / 2;
   return v.size() % 2 ? v[m] : 0.5 * (v[m - 1] + v[m]);
+}
+
+// The iGPU idles near 800 MHz and needs ~150 ms of load to reach its boost clock (hip_clock.csv),
+// so the short microbenchmarks warm up for half a second instead of for one launch.
+template <class Launch>
+void warm_up(Launch launch) {
+  const auto start = std::chrono::steady_clock::now();
+  while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(500)) {
+    launch();
+    CLK_HIP_CHECK(hipDeviceSynchronize());
+  }
 }
 
 const char* arch_name(const hipDeviceProp_t& p) {
@@ -126,11 +150,13 @@ void emit(const Options& o, const std::string& header, const std::string& line) 
   out << line << "\n";
 }
 
+int compiled_wave_size();
+
 std::string device_prefix(const hipDeviceProp_t& p) {
   std::string name = p.name;
   std::replace(name.begin(), name.end(), ',', ' ');
-  return name + "," + arch_name(p) + "," + backend() + "," + std::to_string(p.warpSize) + "," +
-         std::to_string(p.multiProcessorCount);
+  return name + "," + arch_name(p) + "," + backend() + "," + std::to_string(compiled_wave_size()) + "," +
+         std::to_string(p.multiProcessorCount) + "," + (clk::hip::blocking_sync() ? "block" : "spin");
 }
 
 struct Buffer {
@@ -143,9 +169,7 @@ struct Buffer {
 };
 
 float copy_ms(void* dst, const void* src, std::size_t bytes, hipMemcpyKind kind) {
-  hipEvent_t t0, t1;
-  CLK_HIP_CHECK(hipEventCreate(&t0));
-  CLK_HIP_CHECK(hipEventCreate(&t1));
+  hipEvent_t t0 = clk::hip::make_event(), t1 = clk::hip::make_event();
   CLK_HIP_CHECK(hipEventRecord(t0, nullptr));
   CLK_HIP_CHECK(hipMemcpyAsync(dst, src, bytes, kind, nullptr));
   CLK_HIP_CHECK(hipEventRecord(t1, nullptr));
@@ -160,7 +184,7 @@ float copy_ms(void* dst, const void* src, std::size_t bytes, hipMemcpyKind kind)
 // --- kernel 3 -------------------------------------------------------------------------------------
 
 const char* const kGemmHeader =
-    "gpu,arch,backend,warp_size,cus,kernel,config,tsm,tsn,tsk,wptm,wptn,contig,threads,n,reps,"
+    "gpu,arch,backend,warp_size,cus,wait,kernel,config,tsm,tsn,tsk,wptm,wptn,contig,threads,n,reps,"
     "median_ms,min_ms,gflops,h2d_ms,d2h_ms,max_rel_err,registers,scratch_bytes,lds_bytes,"
     "blocks_per_cu";
 
@@ -238,9 +262,7 @@ int run_rocblas(const Options& o, const hipDeviceProp_t& prop) {
   for (int n : o.n) {
     Problem pr(n, o.seed);
     const float alpha = 1.0f, beta = 0.0f;
-    hipEvent_t t0, t1;
-    CLK_HIP_CHECK(hipEventCreate(&t0));
-    CLK_HIP_CHECK(hipEventCreate(&t1));
+    hipEvent_t t0 = clk::hip::make_event(), t1 = clk::hip::make_event();
     // Row-major C = A B is column-major C^T = B^T A^T: pass B first, no transposes.
     auto call = [&]() -> float {
       CLK_HIP_CHECK(hipEventRecord(t0, nullptr));
@@ -291,26 +313,28 @@ __global__ void copy_kernel(const float4* __restrict__ x, float4* __restrict__ y
 }
 
 int run_bandwidth(const Options& o, const hipDeviceProp_t& prop) {
-  const char* header = "gpu,arch,backend,warp_size,cus,kernel,mbytes,reps,median_ms,min_ms,gbps";
+  const char* header = "gpu,arch,backend,warp_size,cus,wait,kernel,mbytes,reps,median_ms,min_ms,gbps";
   for (std::size_t mb : {4, 16, 64, 256, 1024}) {
     const std::size_t bytes = mb << 20, n4 = bytes / sizeof(float4);
     Buffer x(bytes), y(bytes);
     CLK_HIP_CHECK(hipMemset(x.p, 0, bytes));
     const unsigned block = 256;
     const unsigned grid = unsigned((n4 + block - 1) / block);
-    hipEvent_t t0, t1;
-    CLK_HIP_CHECK(hipEventCreate(&t0));
-    CLK_HIP_CHECK(hipEventCreate(&t1));
+    hipEvent_t t0 = clk::hip::make_event(), t1 = clk::hip::make_event();
     std::vector<double> t;
-    for (unsigned r = 0; r <= o.reps; ++r) {  // r = 0 is the warm-up
-      CLK_HIP_CHECK(hipEventRecord(t0, nullptr));
+    auto copy = [&] {
       copy_kernel<<<grid, block>>>(reinterpret_cast<const float4*>(x.p), reinterpret_cast<float4*>(y.p), n4);
+    };
+    warm_up(copy);
+    for (unsigned r = 0; r < o.reps; ++r) {
+      CLK_HIP_CHECK(hipEventRecord(t0, nullptr));
+      copy();
       CLK_HIP_CHECK(hipGetLastError());
       CLK_HIP_CHECK(hipEventRecord(t1, nullptr));
       CLK_HIP_CHECK(hipEventSynchronize(t1));
       float ms = 0;
       CLK_HIP_CHECK(hipEventElapsedTime(&ms, t0, t1));
-      if (r) t.push_back(ms);
+      t.push_back(ms);
     }
     const double med = median(t);
     char line[512];
@@ -325,48 +349,86 @@ int run_bandwidth(const Options& o, const hipDeviceProp_t& prop) {
 
 // --- FMA throughput -------------------------------------------------------------------------------
 
-// Eight independent FMA chains per thread, enough blocks to fill every CU. Measures how many FP32
-// FLOPs per second the device sustains on code with no memory traffic, which shows whether the
-// compiler and hardware dual-issue (more than 2 FLOPs per lane per clock).
+// FP32 FMA rate on code with no memory traffic, in the two instruction forms a GEMM inner loop can
+// compile to. fma_sgpr: x = x * a + b with a, b uniform, so the compiler emits VOP3 v_fma_f32 with
+// two scalar operands. fma_vgpr: x += a * b with per-thread a, b, so it emits VOP2 v_fmac_f32.
+// Independent chains per thread hide the FMA latency; enough blocks fill every CU.
 constexpr int kFmaIters = 4096;
-__global__ void fma_kernel(float* out, float a, float b) {
-  float x0 = threadIdx.x, x1 = x0 + 1, x2 = x0 + 2, x3 = x0 + 3, x4 = x0 + 4, x5 = x0 + 5,
-        x6 = x0 + 6, x7 = x0 + 7;
-  for (int i = 0; i < kFmaIters; ++i) {
-    x0 = fmaf(x0, a, b), x1 = fmaf(x1, a, b), x2 = fmaf(x2, a, b), x3 = fmaf(x3, a, b);
-    x4 = fmaf(x4, a, b), x5 = fmaf(x5, a, b), x6 = fmaf(x6, a, b), x7 = fmaf(x7, a, b);
-  }
-  out[std::size_t(blockIdx.x) * blockDim.x + threadIdx.x] = x0 + x1 + x2 + x3 + x4 + x5 + x6 + x7;
+
+template <int CH>
+__global__ void fma_sgpr(float* out, float a, float b) {
+  float x[CH];
+  for (int c = 0; c < CH; ++c) x[c] = float(threadIdx.x + c);
+  for (int i = 0; i < kFmaIters; ++i)
+    for (int c = 0; c < CH; ++c) x[c] = fmaf(x[c], a, b);
+  float sum = 0.0f;
+  for (int c = 0; c < CH; ++c) sum += x[c];
+  out[std::size_t(blockIdx.x) * blockDim.x + threadIdx.x] = sum;
+}
+
+template <int CH>
+__global__ void fma_vgpr(float* out, const float* in) {
+  const std::size_t t = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+  const float a = in[t], b = 0.5f * in[t];
+  float x[CH];
+  for (int c = 0; c < CH; ++c) x[c] = float(threadIdx.x + c);
+  for (int i = 0; i < kFmaIters; ++i)
+    for (int c = 0; c < CH; ++c) x[c] = fmaf(a, b, x[c]);
+  float sum = 0.0f;
+  for (int c = 0; c < CH; ++c) sum += x[c];
+  out[t] = sum;
+}
+
+// The wavefront size the kernels were compiled for (warpSize in device code). hipDeviceProp_t
+// reports the device default, which stays 32 on RDNA even in a -mwavefrontsize64 build.
+__global__ void wave_size_kernel(int* out) { *out = warpSize; }
+
+int compiled_wave_size() {
+  static const int w = [] {
+    int* d = nullptr;
+    CLK_HIP_CHECK(hipMalloc(&d, sizeof(int)));
+    wave_size_kernel<<<1, 1>>>(d);
+    CLK_HIP_CHECK(hipGetLastError());
+    int h = 0;
+    CLK_HIP_CHECK(hipMemcpy(&h, d, sizeof h, hipMemcpyDeviceToHost));
+    CLK_HIP_CHECK(hipFree(d));
+    return h;
+  }();
+  return w;
 }
 
 int run_fma(const Options& o, const hipDeviceProp_t& prop) {
-  const char* header = "gpu,arch,backend,warp_size,cus,kernel,block,blocks,reps,median_ms,min_ms,gflops";
-  for (unsigned block : {256u, 1024u}) {
-    const unsigned blocks = unsigned(prop.multiProcessorCount) * 64;
-    Buffer out(std::size_t(blocks) * block * sizeof(float));
-    hipEvent_t t0, t1;
-    CLK_HIP_CHECK(hipEventCreate(&t0));
-    CLK_HIP_CHECK(hipEventCreate(&t1));
+  const char* header = "gpu,arch,backend,warp_size,cus,wait,kernel,chains,block,blocks,reps,median_ms,min_ms,gflops";
+  const unsigned block = 1024, blocks = unsigned(prop.multiProcessorCount) * 64;
+  const std::size_t n = std::size_t(blocks) * block;
+  Buffer out(n * sizeof(float)), in(n * sizeof(float));
+  CLK_HIP_CHECK(hipMemset(in.p, 0, n * sizeof(float)));
+  auto time = [&](const char* name, int chains, auto launch) {
+    hipEvent_t t0 = clk::hip::make_event(), t1 = clk::hip::make_event();
+    warm_up(launch);
     std::vector<double> t;
-    for (unsigned r = 0; r <= o.reps; ++r) {
+    for (unsigned r = 0; r < o.reps; ++r) {
       CLK_HIP_CHECK(hipEventRecord(t0, nullptr));
-      fma_kernel<<<blocks, block>>>(out.p, 0.999f, 0.001f);
+      launch();
       CLK_HIP_CHECK(hipGetLastError());
       CLK_HIP_CHECK(hipEventRecord(t1, nullptr));
       CLK_HIP_CHECK(hipEventSynchronize(t1));
       float ms = 0;
       CLK_HIP_CHECK(hipEventElapsedTime(&ms, t0, t1));
-      if (r) t.push_back(ms);
+      t.push_back(ms);
     }
-    const double med = median(t);
-    const double flops = 2.0 * 8 * kFmaIters * double(blocks) * block;
+    const double med = median(t), flops = 2.0 * chains * kFmaIters * double(n);
     char line[512];
-    std::snprintf(line, sizeof line, "%s,fma,%u,%u,%u,%.4f,%.4f,%.1f", device_prefix(prop).c_str(), block,
-                  blocks, o.reps, med, *std::min_element(t.begin(), t.end()), flops / (med * 1e-3) / 1e9);
+    std::snprintf(line, sizeof line, "%s,%s,%d,%u,%u,%u,%.4f,%.4f,%.1f", device_prefix(prop).c_str(), name,
+                  chains, block, blocks, o.reps, med, *std::min_element(t.begin(), t.end()),
+                  flops / (med * 1e-3) / 1e9);
     emit(o, header, line);
     CLK_HIP_CHECK(hipEventDestroy(t0));
     CLK_HIP_CHECK(hipEventDestroy(t1));
-  }
+  };
+  time("fma_sgpr", 8, [&] { fma_sgpr<8><<<blocks, block>>>(out.p, 0.999f, 0.001f); });
+  time("fma_vgpr", 8, [&] { fma_vgpr<8><<<blocks, block>>>(out.p, in.p); });
+  time("fma_vgpr", 16, [&] { fma_vgpr<16><<<blocks, block>>>(out.p, in.p); });
   return 0;
 }
 
@@ -411,21 +473,33 @@ int run_clock(const Options& o, const hipDeviceProp_t& prop) {
   CLK_HIP_CHECK(hipStreamCreateWithFlags(&probe, hipStreamNonBlocking));
   CLK_HIP_CHECK(hipStreamCreateWithFlags(&load, hipStreamNonBlocking));
 
-  // The load: the given GEMM configuration, launched back to back for about two seconds, while
-  // the probe samples the clock on another stream. With no --config, the probe runs on an idle GPU.
+  // The load: the given GEMM configuration (or, with --fma, the FMA kernel), launched back to back
+  // for --seconds while the probe samples the clock on another stream. With neither, the probe
+  // runs on an idle GPU.
   std::unique_ptr<Problem> pr;
   std::unique_ptr<clk::hip::Gemm> g;
-  if (!o.configs.empty()) {
+  std::unique_ptr<Buffer> fma_out, fma_in;
+  const unsigned fma_blocks = unsigned(prop.multiProcessorCount) * 64, fma_block = 1024;
+  std::string label = "idle";
+  if (o.fma) {
+    fma_out = std::make_unique<Buffer>(std::size_t(fma_blocks) * fma_block * sizeof(float));
+    fma_in = std::make_unique<Buffer>(fma_out->bytes);
+    CLK_HIP_CHECK(hipMemset(fma_in->p, 0, fma_in->bytes));
+    label = "fma";
+  } else if (!o.configs.empty()) {
     g = std::make_unique<clk::hip::Gemm>(prop, o.configs[0]);
     if (!g->invalid().empty()) throw std::runtime_error(g->invalid());
     pr = std::make_unique<Problem>(o.n[0], o.seed);
+    label = "gemm_reg " + o.configs[0].str();
   }
-  const char* header = "gpu,arch,backend,warp_size,cus,load,n,sample,t_s,mhz";
+  const char* header = "gpu,arch,backend,warp_size,cus,wait,load,n,sample,t_s,mhz";
   const auto start = std::chrono::steady_clock::now();
   int sample = 0;
-  while (std::chrono::steady_clock::now() - start < std::chrono::seconds(3)) {
-    if (g)  // keep the load stream busy while the probe runs
-      for (int i = 0; i < 4; ++i) g->launch(pr->n, pr->dA.p, pr->dB.p, pr->dC.p, load);
+  while (std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() < o.seconds) {
+    for (int i = 0; i < 4; ++i) {  // keep the load stream busy while the probe runs
+      if (g) g->launch(pr->n, pr->dA.p, pr->dB.p, pr->dC.p, load);
+      if (fma_out) fma_vgpr<16><<<fma_blocks, fma_block, 0, load>>>(fma_out->p, fma_in->p);
+    }
     clock_probe<<<1, 1, 0, probe>>>(d, ticks);
     CLK_HIP_CHECK(hipGetLastError());
     unsigned long long h[2];
@@ -435,10 +509,11 @@ int run_clock(const Options& o, const hipDeviceProp_t& prop) {
     const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     char line[512];
     std::snprintf(line, sizeof line, "%s,%s,%d,%d,%.3f,%.0f", device_prefix(prop).c_str(),
-                  g ? ("gemm_reg " + o.configs[0].str()).c_str() : "idle", g ? pr->n : 0, sample++, t,
+                  label.c_str(), g ? pr->n : 0, sample++, t,
                   double(h[0]) / secs / 1e6);
     emit(o, header, line);
     CLK_HIP_CHECK(hipStreamSynchronize(load));
+    if (o.interval > 0) std::this_thread::sleep_for(std::chrono::duration<double>(o.interval));
   }
   CLK_HIP_CHECK(hipDeviceSynchronize());
   CLK_HIP_CHECK(hipFree(d));
@@ -459,7 +534,8 @@ void print_info(const Options& o, const hipDeviceProp_t& p) {
   std::printf("backend             %s\n", backend());
   std::printf("runtime / driver    %d / %d\n", runtime, driver);
   std::printf("multiProcessorCount %d\n", p.multiProcessorCount);
-  std::printf("warpSize            %d\n", p.warpSize);
+  std::printf("warpSize            %d (device default)\n", p.warpSize);
+  std::printf("compiled wave size  %d\n", compiled_wave_size());
   std::printf("clockRate           %d kHz (reported maximum)\n", p.clockRate);
   std::printf("wall clock rate     %d kHz\n", wall_khz);
   std::printf("maxThreadsPerBlock  %d\n", p.maxThreadsPerBlock);
@@ -479,6 +555,7 @@ int main(int argc, char** argv) {
   const Options o = parse(argc, argv);
   try {
     CLK_HIP_CHECK(hipSetDevice(o.device));
+    clk::hip::set_blocking_sync(o.blocking);
     hipDeviceProp_t prop;
     CLK_HIP_CHECK(hipGetDeviceProperties(&prop, o.device));
     if (o.info) return print_info(o, prop), 0;
@@ -491,8 +568,8 @@ int main(int argc, char** argv) {
     }
     if (o.rocblas) return run_rocblas(o, prop);
     if (o.bandwidth) return run_bandwidth(o, prop);
-    if (o.fma) return run_fma(o, prop);
     if (o.clock) return run_clock(o, prop);
+    if (o.fma) return run_fma(o, prop);
 
     std::vector<Config> configs = o.configs;
     for (const Config& c : clk::hip::compiled_configs()) {
