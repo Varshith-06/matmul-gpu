@@ -1,0 +1,4 @@
+gpu,driver,kernel,n,rows,cols,opts,local,reps,median_ms,min_ms,gflops,gbps,h2d_ms,d2h_ms,max_rel_err,registers,spill_bytes
+NVIDIA GeForce RTX 4060 Laptop GPU,616.92,layernorm,,4096,1024,-DWG=256,256,20,0.062464,0.061440,,537.18,1.3614,1.3374,1.373e-07,,
+NVIDIA GeForce RTX 4060 Laptop GPU,616.92,layernorm,,4096,4096,-DWG=256,256,20,0.593920,0.547840,,225.99,5.1897,5.2403,1.305e-07,,
+NVIDIA GeForce RTX 4060 Laptop GPU,616.92,layernorm,,4096,16384,-DWG=256,256,20,2.296832,2.213888,,233.74,20.8299,21.5135,1.371e-07,,

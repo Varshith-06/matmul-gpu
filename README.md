@@ -24,6 +24,8 @@ This is the GPU sequel to [CacheMatmul](https://github.com/Varshith-06/matmul-cp
 
 **Ridge point.** 13,640 GFLOPS / 256 GB/s ≈ **53 FLOPs per byte**. Large GEMM can sit above it and be compute-bound. Softmax does about 5 FLOPs per 8 bytes, far below it, so it is judged in GB/s.
 
+**Repeatability.** I ran the whole tuning and experiment grid a second time with the laptop in OMEN's performance mode ([`results/rerun_performance_mode/`](results/rerun_performance_mode/)). The median change across all configurations was below 1%. The headline kernel moved from 5,220 to 5,185 GFLOPS, the tuning picked the same best configuration, and softmax and layer norm agreed within 1% at 4096 columns. The larger differences were 5–13% for the naive kernels and a few tuning points, and much more for the attention kernels at L = 512, which last only a few microseconds. Performance mode raised the power ceiling (peak draw 97 → 107 W, and NVIDIA's power-cap flag disappeared). But the GPU then hit its thermal limit at 86–88 °C, so the median clock during the GEMM ladder rose only from 2,220 to 2,325 MHz. The OpenCL kernels did not get faster. cuBLAS gained 5–9%, which would make `gemm_reg` 70% of cuBLAS instead of 74%. The headline numbers here come from the first run.
+
 ## Headline results
 
 N = 4096 for GEMM, 4096 × 4096 for softmax. Times are GPU-event medians without host↔device copies. CLBlast is timed on the host around the whole call (see [below](#reference-ceilings)).
