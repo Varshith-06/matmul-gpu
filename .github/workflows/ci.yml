@@ -1,0 +1,28 @@
+name: CI
+on: [push, pull_request]
+
+# GitHub's runners have no GPU. PoCL, an open-source OpenCL implementation that runs kernels on the
+# CPU, lets every kernel compile and run for correctness on each push. Speed is never measured here.
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OpenCL (PoCL CPU driver)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ocl-icd-opencl-dev opencl-headers opencl-clhpp-headers \
+                                  pocl-opencl-icd clinfo
+          clinfo -l
+      - name: Build
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCLK_WERROR=ON && cmake --build build -j
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Smoke-run the harness, sweep and plots
+        run: |
+          ./build/bench --devices
+          QUICK=1 OUT=/tmp/results scripts/sweep.sh
+          python3 scripts/tune.py --quick --out /tmp/results
+          pip install pandas matplotlib
+          python3 scripts/plot.py --results /tmp/results
