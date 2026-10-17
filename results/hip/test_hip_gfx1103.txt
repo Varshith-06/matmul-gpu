@@ -1,0 +1,4 @@
+device 0: AMD Radeon(TM) Graphics (gfx1103), 6 CUs, warpSize 32, maxThreadsPerBlock 1024, sharedMemPerBlock 65536
+skip: 128x128 k32 2x2 (4096 threads > maxThreadsPerBlock (1024))
+skip: 128x128 k32 2x2 contig (4096 threads > maxThreadsPerBlock (1024))
+1048 checks, 0 failed, 34 configurations skipped

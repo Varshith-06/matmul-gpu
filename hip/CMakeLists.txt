@@ -47,3 +47,7 @@ if(CLK_HIP_NVIDIA)
 elseif(CLK_HIP_RESOURCE_USAGE)
   target_compile_options(clk_hip PRIVATE -Rpass-analysis=kernel-resource-usage)
 endif()
+
+add_executable(test_hip test_hip.cpp)
+target_link_libraries(test_hip PRIVATE clk_hip)
+add_test(NAME hip_gemm COMMAND test_hip)
