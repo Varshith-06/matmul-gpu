@@ -8,6 +8,23 @@
 
 namespace clk::hip {
 
+namespace {
+bool g_blocking = false;
+}
+
+void set_blocking_sync(bool blocking) {
+  g_blocking = blocking;
+  if (blocking) CLK_HIP_CHECK(hipSetDeviceFlags(hipDeviceScheduleBlockingSync));
+}
+
+bool blocking_sync() { return g_blocking; }
+
+hipEvent_t make_event() {
+  hipEvent_t e;
+  CLK_HIP_CHECK(hipEventCreateWithFlags(&e, g_blocking ? hipEventBlockingSync : hipEventDefault));
+  return e;
+}
+
 std::string Config::str() const {
   std::string s = std::to_string(tsm) + "x" + std::to_string(tsn) + " k" + std::to_string(tsk) +
                   " " + std::to_string(wptm) + "x" + std::to_string(wptn);
@@ -63,11 +80,12 @@ void launch(dim3 grid, dim3 block, hipStream_t s, int N, const float* A, const f
   gemm_reg<TSM, TSN, TSK, WPTM, WPTN, CONTIG><<<grid, block, 0, s>>>(N, A, B, C);
 }
 
-// Registers both ownership layouts of one configuration, if it satisfies the divisibility rules.
-// Device limits are checked at run time by check_config(), as the OpenCL host does.
+// Registers both ownership layouts of one configuration, if it satisfies the divisibility rules
+// and has at most 1,024 threads (no AMD or NVIDIA GPU allows more per block). This device's own
+// limits are checked at run time by check_config(), as the OpenCL host does.
 template <int TSM, int TSN, int TSK, int WPTM, int WPTN>
 void add(std::map<Config, Entry>& t) {
-  if constexpr (divisible<TSM, TSN, TSK, WPTM, WPTN>()) {
+  if constexpr (divisible<TSM, TSN, TSK, WPTM, WPTN>() && (TSM / WPTM) * (TSN / WPTN) <= 1024) {
     t[Config{TSM, TSN, TSK, WPTM, WPTN, false}] = {
         reinterpret_cast<const void*>(&gemm_reg<TSM, TSN, TSK, WPTM, WPTN, false>),
         &launch<TSM, TSN, TSK, WPTM, WPTN, false>};
@@ -105,6 +123,10 @@ const std::map<Config, Entry>& table() {
     // Larger tiles that the RTX 4060 (48 KB, 1,024 threads) or AMD's OpenCL driver (256 work-items)
     // cannot run, kept to probe the 64 KB LDS and 1,024-thread limits on AMD.
     add<128, 128, 32, 4, 4>(m);  // 1,024 threads
+    // Larger tiles raise the FLOPs per byte of global traffic (TSM * TSN / (2 (TSM + TSN))): 42.7
+    // and 64 against 32 for 128 x 128. 512 and 1,024 threads: HIP only on AMD.
+    add<256, 128, 16, 8, 8>(m);
+    add<256, 256, 16, 8, 8>(m);
 #ifdef __HIP_PLATFORM_AMD__  // NVIDIA allows at most 48 KB of static shared memory per block
     add<128, 128, 64, 8, 8>(m);  // exactly 64 KB of tiles
 #endif
@@ -161,9 +183,7 @@ void Gemm::launch(int N, const float* A, const float* B, float* C, hipStream_t s
 
 float Gemm::run(int N, const float* A, const float* B, float* C, hipStream_t stream) const {
   if (!why_.empty()) throw std::logic_error("gemm_reg " + c_.str() + " is not runnable: " + why_);
-  hipEvent_t t0, t1;
-  CLK_HIP_CHECK(hipEventCreate(&t0));
-  CLK_HIP_CHECK(hipEventCreate(&t1));
+  hipEvent_t t0 = make_event(), t1 = make_event();
   CLK_HIP_CHECK(hipEventRecord(t0, stream));
   launch_(grid(N), block(), stream, N, A, B, C);
   CLK_HIP_CHECK(hipGetLastError());

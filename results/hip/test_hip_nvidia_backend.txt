@@ -1,4 +1,2 @@
 device 0: NVIDIA GeForce RTX 4060 Laptop GPU (nvidia), 24 CUs, warpSize 32, maxThreadsPerBlock 1024, sharedMemPerBlock 49152
-skip: 128x128 k32 2x2 (4096 threads > maxThreadsPerBlock (1024))
-skip: 128x128 k32 2x2 contig (4096 threads > maxThreadsPerBlock (1024))
-1008 checks, 0 failed, 34 configurations skipped
+1088 checks, 0 failed, 0 configurations skipped

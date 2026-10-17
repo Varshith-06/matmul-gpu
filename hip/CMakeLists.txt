@@ -43,9 +43,15 @@ target_link_libraries(clk_hip PUBLIC clk_hip_ref)
 if(CLK_HIP_NVIDIA)
   target_include_directories(clk_hip PUBLIC ${CLK_HIP_INCLUDE})
   target_compile_definitions(clk_hip PUBLIC __HIP_PLATFORM_NVIDIA__)
-  target_compile_options(clk_hip PUBLIC $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
+  # HIP's CUDA layer wraps CUDA APIs that CUDA 12 deprecates; the warnings are not ours.
+  target_compile_options(clk_hip PUBLIC $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wno-deprecated-declarations>)
 elseif(CLK_HIP_RESOURCE_USAGE)
   target_compile_options(clk_hip PRIVATE -Rpass-analysis=kernel-resource-usage)
+endif()
+# RDNA runs wave32 by default and can run wave64; CDNA (Instinct) is always wave64.
+option(CLK_HIP_WAVE64 "Compile for 64-wide wavefronts (-mwavefrontsize64; RDNA only)" OFF)
+if(CLK_HIP_WAVE64 AND NOT CLK_HIP_NVIDIA)
+  target_compile_options(clk_hip PUBLIC $<$<COMPILE_LANGUAGE:HIP>:-mwavefrontsize64>)
 endif()
 
 add_executable(test_hip test_hip.cpp)

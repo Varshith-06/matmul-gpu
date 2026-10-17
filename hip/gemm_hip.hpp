@@ -18,6 +18,14 @@ namespace clk::hip {
       throw std::runtime_error(std::string(#expr) + ": " + hipGetErrorString(err_));      \
   } while (0)
 
+// How the host waits for the GPU. Spinning (HIP's default) keeps CPU cores busy for the whole
+// kernel; on an APU the CPU and the integrated GPU share one power budget, so the spinning cores
+// take power from the GPU. Blocking waits sleep instead. Call before any other HIP call.
+void set_blocking_sync(bool blocking);
+bool blocking_sync();
+// A hipEvent with the matching wait behaviour.
+hipEvent_t make_event();
+
 struct Config {
   int tsm = 64, tsn = 64, tsk = 16, wptm = 4, wptn = 4;
   bool contig = false;
