@@ -1,0 +1,20 @@
+Platform: NVIDIA CUDA (OpenCL 3.0 CUDA 13.4.89)
+  Device: NVIDIA GeForce RTX 4060 Laptop GPU
+    compute units      24
+    max clock          2250 MHz
+    local memory       48 KB
+    max work-group     1024
+    global memory      8187 MB
+    global mem cache   672 KB
+    OpenCL C           OpenCL C 1.2 
+    driver             616.92
+Platform: AMD Accelerated Parallel Processing (OpenCL 2.1 AMD-APP (3617.0))
+  Device: gfx1103
+    compute units      6
+    max clock          2700 MHz
+    local memory       64 KB
+    max work-group     256
+    global memory      6190 MB
+    global mem cache   16 KB
+    OpenCL C           OpenCL C 2.0 
+    driver             3617.0 (PAL,LC)
