@@ -4,6 +4,8 @@
 
 FP32 GEMM and softmax in OpenCL on an RTX 4060 Laptop GPU, each taken from a naive kernel to an optimized one and explained with measurements. GEMM goes from **813 GFLOPS** (naive) to **5,220 GFLOPS** at N = 4096: **38% of FP32 peak** at the measured 2,220 MHz clock, **91% of CLBlast** and **74% of cuBLAS**. Softmax runs at **230 GB/s, 90% of the 256 GB/s memory roofline**. Fusing the scale pass into softmax makes one attention head **22% faster** at L = 4096.
 
+The GEMM kernel is also [ported to HIP and measured on the laptop's integrated Radeon 780M](#hip-port-on-the-radeon-780m) (RDNA 3) under ROCm. Through HIP it reaches 1,511 GFLOPS at N = 4096. That is 96.5% of the same kernel through AMD's OpenCL driver, and 66% of rocBLAS, which runs only under an unofficial override.
+
 This is the GPU sequel to [CacheMatmul](https://github.com/Varshith-06/matmul-cpu): the same operation, the same testing rules, a different machine model. Every number below comes from a CSV in [`results/`](results/) and can be regenerated with the commands in [Reproduce](#reproduce).
 
 ## Machine
@@ -194,15 +196,128 @@ The products reach 2.9 TFLOPS (QKᵀ) and 2.5 TFLOPS (PV), below the square GEMM
 
 ## How this maps to AMD GPUs
 
-| This project (OpenCL) | AMD (HIP / ROCm) | What changes |
-|---|---|---|
-| work-group, local memory | workgroup, LDS | LDS size and bank layout differ by generation: re-tune the tiles |
-| warp of 32 | wavefront: 64 on CDNA (Instinct), 32 or 64 on RDNA (Radeon) | Coalescing, divergence and reductions are reasoned about per 64 lanes on Instinct |
-| `barrier(CLK_LOCAL_MEM_FENCE)` | `__syncthreads()` | none |
-| tuned `gemm_reg` | rocBLAS / hipBLASLt | Production GEMMs use matrix-core instructions on Instinct |
-| fused softmax, attention step | MIOpen, Composable Kernel | Libraries of fused ML kernels |
+| This project (OpenCL) | AMD (HIP / ROCm) | What changes | On the Radeon 780M |
+|---|---|---|---|
+| work-group, local memory | workgroup, LDS | LDS size and bank layout differ by generation: re-tune the tiles | **Measured** ([below](#hip-port-on-the-radeon-780m)): 64 KB LDS and 1,024 threads per block in HIP. The best tile and work per thread did not move (128 × 128, 8 × 8); TSK moved from 8 to 16 |
+| warp of 32 | wavefront: 64 on CDNA (Instinct), 32 or 64 on RDNA (Radeon) | Coalescing, divergence and reductions are reasoned about per 64 lanes on Instinct | **Measured**: wave32 is the default; a wave64 build of kernel 3 is 4–6% slower. Instinct (wave64 only): still a prediction |
+| `barrier(CLK_LOCAL_MEM_FENCE)` | `__syncthreads()` | none | **Measured**: a line-for-line translation passes the same tests |
+| tuned `gemm_reg` | rocBLAS / hipBLASLt | Production GEMMs use matrix-core instructions on Instinct | **Measured**, unofficially: rocBLAS is 1.5× kernel 3 at N = 4096. Matrix cores: not used here (FP32), a prediction |
+| fused softmax, attention step | MIOpen, Composable Kernel | Libraries of fused ML kernels | Not ported: a prediction |
 
-The same kernels already run on an AMD device: the test suite passes on this laptop's Radeon 780M (RDNA 3, `gfx1103`) through AMD's OpenCL driver. Configurations above its 256-work-item limit are skipped. I would expect the kernel-3 tuning to move on an Instinct GPU, because a 64-wide wavefront and different LDS and register budgets change both sides of the heatmap's ridge. I would re-run the sweep before trusting any tile size.
+The OpenCL test suite also passes on the 780M through AMD's OpenCL driver, with configurations above its 256-work-item limit skipped. On an Instinct GPU I would still expect the tuning to move, because a 64-wide wavefront and different LDS and register budgets change both sides of the heatmap's ridge. I would re-run the sweep before trusting any tile size there.
+
+## HIP port on the Radeon 780M
+
+Kernel 3 (`gemm_reg`) is ported to HIP in [`hip/`](hip/). The tile sizes become template parameters, so one binary holds the whole tuning grid. The port is checked against the FP64 reference, tuned, and timed on the laptop's integrated **Radeon 780M** under ROCm, next to the same kernel through AMD's OpenCL driver and next to rocBLAS. **With the same configuration, measured interleaved, HIP reaches 1,511 GFLOPS at N = 4096, against 1,565 for OpenCL and 2,275 for rocBLAS.**
+- HIP is 3–4% slower than OpenCL at N = 2048 and 4096, and further behind at small N, although the compiled kernels contain the same instructions.
+- The [explanation](#why-hip-is-34-slower-than-opencl-here) points at the host side.
+
+**How it ran, and what is unofficial.**
+- **HIP:** ROCm 7.2.4 in WSL2 (Ubuntu 24.04) through librocdxg, AMD's library that gives ROCm access to Windows GPUs. AMD's HIP SDK for Windows does not list gfx1103.
+  - One step is unofficial. librocdxg 1.2.0 and 1.2.2 both reported "No WDDM adapters found" until I added the 780M's PCI ID (0x15BF) as gfx 11.0.3 to its supplemental device list (`/opt/rocm/share/rocdxg/dids.conf`). The librocdxg 1.2.0 release notes say gfx11.0.3 was added to the supported device list, but this chip's ID was not recognized.
+  - The HIP kernels are compiled for gfx1103 itself, with no `HSA_OVERRIDE_GFX_VERSION`.
+- **rocBLAS** 5.2.0 ships no gfx1103 kernels. It runs only with `HSA_OVERRIDE_GFX_VERSION=11.0.0`, which loads its gfx1100 (RX 7900) kernels. That is **unofficial**, and every rocBLAS number below carries that label.
+- **NVIDIA backend:** the same HIP sources also compile with nvcc for the RTX 4060, through HIP's CUDA headers. That build is a correctness check only and appears in no performance number.
+
+| | |
+|---|---|
+| GPU | Radeon 780M in the Ryzen 7 7840HS: RDNA 3, `gfx1103`. **12 CUs × 2 SIMD32 × 32 lanes = 768 FP32 lanes** (rocminfo). `hipDeviceProp_t` reports `multiProcessorCount` = 6, as the OpenCL driver does: those are WGPs of 2 CUs. 2 MB L2, and no memory of its own: it shares the laptop's system RAM ([`rocminfo.txt`](results/hip/rocminfo.txt), [`hip_device.txt`](results/hip/hip_device.txt)) |
+| Limits | HIP: 1,024 threads and 64 KB of LDS per block. AMD's OpenCL driver: 256 work-items per group, and 32 KB of local memory since the driver update (the July 2024 driver reported 64 KB) |
+| Software | AMD Adrenalin 26.8.1 (driver 32.0.31041.1004). HIP 7.2.53211 (ROCm 7.2.4) and librocdxg 1.2.2 in WSL2. OpenCL: AMD-APP 3679.0 (PAL, LC) on Windows, run with the same `bench` as above. Windows "Balanced" plan, on AC power |
+| Wave size | **wave32**, RDNA's default, for every headline number. A wave64 build (`-DCLK_HIP_WAVE64=ON`) is measured alongside |
+| Memory | **57.1 GB/s**, measured with a float4 copy kernel on 1 GB buffers (53.9–66.8 GB/s from 4 MB to 1 GB; [`hip_bandwidth.csv`](results/hip/hip_bandwidth.csv)) |
+| Clock | 807 MHz idle. Under load, the median over busy samples ranged from 1,710 to 2,276 MHz across experiments, depending on how hot the laptop was ([`hip_summary.md`](results/hip/hip_summary.md)); during the head-to-head it was **1,768 MHz** ([`h2h/hip_clock_h2h.csv`](results/hip/h2h/hip_clock_h2h.csv)). There is no nvidia-smi for this GPU (AMD's `amd-smi` for WSL fails on it), so a one-thread kernel reads the shader-cycle counter against the 100 MHz wall clock every 0.25 s from a second process. On the RTX 4060 the same probe reads a median of 2,187 MHz against nvidia-smi's 2,190 ([`clock_probe_check/`](results/hip/clock_probe_check/)) |
+| Method | As above: FP64 check first, one warm-up launch, then 20 hipEvent-timed launches, median reported. The [comparisons are interleaved](#tuning-and-repeatability-on-an-apu) |
+
+**Peak, and the dual-issue assumption.** 768 lanes × 2 FLOPs × 1,768 MHz = **2,715 GFLOPS** if each lane issues one FMA per cycle. RDNA 3 can issue two FP32 FMAs per lane per cycle, either as a VOPD pair (`v_dual_fmac_f32`) in wave32 or by running wave64 on its doubled ALUs, which gives **5,430 GFLOPS**. Both modes occur here:
+- In the best kernel's main loop, 60 of the 64 FMAs per k step are VOPD pairs ([`hip_isa_loops.txt`](results/hip/hip_isa_loops.txt)).
+- An FMA microbenchmark reaches 2,932 GFLOPS in wave32 and 5,836 in wave64 with the same code (separate runs without a clock log: [`hip_fma.csv`](results/hip/hip_fma.csv), [`wave64/hip_fma.csv`](results/hip/wave64/hip_fma.csv)).
+
+So the tables give both percentages. Dual-issue is the true ceiling, and single-issue is the conservative one.
+
+### Headline: same kernel, same GPU, interleaved
+
+Configuration 128 × 128, TSK 16, 8 × 8 per thread: the best point of both the HIP and the OpenCL tuning (below). Each of five rounds runs every contender once at each N, rotating the order. Medians are shown, and every run passed the FP64 check ([`h2h/`](results/hip/h2h/)).
+
+| Kernel | N = 2048 (GFLOPS) | N = 4096 (GFLOPS) | Time at 4096 (ms) | % of single-issue peak | % of dual-issue peak |
+|---|---:|---:|---:|---:|---:|
+| OpenCL `gemm_reg` (AMD's Windows driver) | 1,677 | 1,565 | 87.8 | 57.6% | 28.8% |
+| **HIP `gemm_reg`, wave32** (ROCm 7.2.4 on WSL) | 1,619 | **1,511** | 90.9 | 55.7% | 27.8% |
+| HIP `gemm_reg`, wave64 | 1,516 | 1,450 | 94.8 | 53.4% | 26.7% |
+| rocBLAS 5.2.0 SGEMM, gfx1100 kernels via override (unofficial; ceiling) | 1,777 | 2,275 | 60.4 | 83.8% | 41.9% |
+
+Percentages are at N = 4096 against the 1,768 MHz median. HIP reaches 96.5% of OpenCL at both sizes. It reaches 91% of rocBLAS at N = 2048 and 66% at N = 4096.
+
+![HIP ladder](results/hip/hip_ladder.png)
+
+The ladder ([`h2h_ladder/`](results/hip/h2h_ladder/)) is a separate interleaved run, with three rounds per size:
+- **Small sizes:** HIP's gap grows. It is 22% behind OpenCL at N = 256 (148 vs 191 GFLOPS; 0.226 vs 0.176 ms), 16% at 512 and 4% at 1024.
+- **N = 2048:** HIP is 5% behind.
+- **N = 3072:** OpenCL dips to 1,135–1,145 GFLOPS in two of three rounds (1,558 in the third), so HIP leads with 1,580. I have not explained the dip.
+- **N = 4096:** the order flips in this run, with HIP at 1,469 and OpenCL at 1,451.
+
+So a 3–4% gap at large N is about the size of the run-to-run spread. The gap at small N is larger and consistent.
+
+### Why HIP is 3–4% slower than OpenCL here
+
+- **Not the code.** I dumped the OpenCL driver's code object (`bench --ptx`) and disassembled it with ROCm's `llvm-objdump`. It has 119 VGPRs and runs wave32. The whole kernel contains 30 `v_dual_fmac_f32` pairs, 4 `v_fmac_f32`, 8 LDS loads, 16 LDS stores, 16 global loads and 2 barriers, exactly the counts in hipcc's code ([`isa/`](results/hip/isa/)).
+- **The host side differs.** While a kernel runs, ROCm on WSL keeps four host threads busy: 15.4–15.6 s of CPU time in a 4.2–4.6 s run, against 0.27–0.31 s for the OpenCL run of the same work ([`host_cpu.csv`](results/hip/host_cpu.csv), and `top -H`). HIP's blocking-wait flags (`--blocking`) did not reduce it.
+- **On an APU, busy CPU cores cost GPU throughput.** The CPU and the GPU share one power budget. Running the OpenCL kernel while four CPU threads spin lowers it from 1,818 to 1,636 GFLOPS, 10% (medians of 3, alternating; [`cpu_load_check/`](results/hip/cpu_load_check/)).
+- Together that makes the polling a likely cause of HIP's 3–4% at large N. I could not remove the polling to prove it.
+- The larger gap at small N (about 0.05 ms per launch at N = 256) looks like a per-launch cost of the WSL path, but I have not measured launch overhead separately.
+- The two APIs also run on different software stacks (Windows' PAL driver against ROCm through librocdxg), so part of the gap could come from elsewhere in that stack.
+
+### Tuning and repeatability on an APU
+
+![HIP tuning](results/hip/hip_tuning.png)
+
+The 54-point grid from experiment 3, plus one point only HIP can run on AMD: exactly 64 KB of tiles. 24 points run at each N ([`hip_tuning.csv`](results/hip/hip_tuning.csv), wave32 run A). VGPRs and waves per SIMD come from the compiler (`-Rpass-analysis=kernel-resource-usage`, [`hip_resources.csv`](results/hip/hip_resources.csv)). No configuration spills: scratch is 0 for all 56 kernels.
+- **The optimum moved in TSK only.** The best point is 128 × 128, TSK 16, 8 × 8 everywhere: HIP wave32, the repeat run, wave64, and OpenCL's own tuning on this GPU ([`opencl_gfx1103/`](results/hip/opencl_gfx1103/)). The RTX 4060's best point (TSK 8) runs **30% slower** here: 1,065 against 1,512 GFLOPS at N = 4096. The compiler shows why:
+  - TSK 8 needs 139 VGPRs, so 7 waves fit per SIMD; TSK 16 needs 119, so 8 fit.
+  - The compiler unrolls TSK 8's eight-step k loop completely, and only 198 of its 512 FMAs come out as VOPD pairs (39%). TSK 16's loop stays rolled, with 60 of 64 paired (94%).
+  - On NVIDIA the same change in TSK went the other way: 120 → 151 registers, and half the occupancy.
+- **The registers-versus-occupancy trade-off still shapes the ridge.**
+  - TSK 32 needs 151 VGPRs (6 waves): 1,168 GFLOPS.
+  - The 64 KB point (TSK 64) needs 215 VGPRs (4 waves) and fits one block per WGP: 994.
+  - 2 × 2 and 4 × 4 per thread fit 7–16 waves per SIMD but do more LDS loads per FMA: 513–1,116 GFLOPS at N = 4096.
+- **Small tiles with 8 × 8 per thread are the worst corner again** (241–265 GFLOPS). With 16 threads, a block is half of a wave32.
+- **HIP's extra headroom does not pay off for these tiles.** The 128 × 128, 4 × 4 points need 1,024 threads (HIP only on AMD) and reach 706–996.
+- **Repeatability.**
+  - A second run of the whole grid (run B, [`repeat/`](results/hip/repeat/)) came out **23% slower at the median** (39–100% of run A per point). The same best point won.
+  - Run B started after about 7 minutes of load, and the busy-clock median during the sweep fell from 2,276 to 1,870 MHz (18%), less than the throughput did.
+  - Absolute numbers on this APU therefore move by tens of percent with temperature. That is why every comparison above is interleaved and the tables quote no cross-run differences.
+
+**More reuse per byte does not help (a hypothesis I tested and rejected).**
+- 57.1 GB/s × the 128 × 128 tile's 32 FLOPs per byte of global loads (the [roofline](#roofline) model) gives 1,827 GFLOPS. That is close to what the kernel reaches, which suggested it might be DRAM-bound here.
+- I tested this with 256 × 128 and 256 × 256 tiles: 42.7 and 64 FLOPs per byte, 512 and 1,024 threads, so HIP only.
+- Interleaved with 128 × 128 over three rounds, they reached 1,576 and 1,508 GFLOPS against 1,597 at N = 4096 ([`tiles/`](results/hip/tiles/)). So the kernel is not DRAM-bound.
+- The limit is on-chip, and I cannot say which part: ROCm's profiler does not run under WSL (librocdxg's README), so there are no counters.
+
+### Ownership layout on AMD
+
+N = 4096, the same configurations as the [RTX experiment](#3-2d-register-blocking-5220-gflops) plus the 780M's best ([`hip_ownership.csv`](results/hip/hip_ownership.csv), [`opencl_gfx1103/ownership.csv`](results/hip/opencl_gfx1103/ownership.csv)):
+
+| Config | HIP strided | HIP contiguous | Loss | OpenCL strided | OpenCL contiguous | Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| 64 × 64, TSK 16, 4 × 4 | 978 | 818 | 16% | 1,003 | 697 | 30% |
+| 128 × 128, TSK 8, 8 × 8 | 1,046 | 926 | 12% | 1,086 | 782 | 28% |
+| 128 × 128, TSK 16, 8 × 8 | 1,467 | 1,196 | 19% | 1,458 | 906 | 38% |
+
+- **The strided layout wins on AMD too**, and by more than on the RTX 4060 for small blocks: 4 × 4 lost 2% there and 16–30% here.
+- **The contiguous code reads B differently.** It uses `ds_load_b128`, four consecutive floats per lane, where the strided code uses `ds_load_2addr_b32` ([`isa/`](results/hip/isa/)).
+- **OpenCL loses more than HIP.** The two were measured in separate runs, so I would not read much into the difference between their losses.
+
+### wave32 or wave64
+
+The wave64 build is 6% slower at N = 2048 and 4% at N = 4096 (interleaved, above). Its main loop has no VOPD pairs: VOPD exists only in wave32, so the loop is 64 plain `v_fmac_f32`. Wave64 gets its dual rate from the hardware instead, as the microbenchmark shows. Either way the kernel uses 27–29% of the dual-issue peak, so FMA issue is not what limits it, and the wave size barely matters. The wave64 tuning ([`wave64/`](results/hip/wave64/)) picks the same best point.
+
+### Limitations of the HIP results
+
+- **The setup is semi-official.** The device-ID entry for librocdxg is a manual step, and rocBLAS ran only under an `HSA_OVERRIDE`. Under the other override I tried (11.0.2, gfx1102 kernels), rocBLAS ran at 214–530 GFLOPS from N = 2048 to 4096 ([`hip_rocblas.csv`](results/hip/hip_rocblas.csv)), so the "ceiling" depends on which foreign kernels get loaded.
+- **The two APIs run on different stacks.** HIP goes through WSL2's GPU paravirtualization; OpenCL runs on Windows. The HIP-vs-OpenCL difference mixes API and stack.
+- **APU drift.** Absolute numbers depend on the laptop's temperature (above). Only the interleaved comparisons should be compared with each other.
+- **The clock monitor perturbs slightly.** With it running, the best kernel measured 1,470–1,510 GFLOPS; without it, 1,514–1,568 ([`hip_monitor_on.csv`](results/hip/hip_monitor_on.csv), [`hip_monitor_off.csv`](results/hip/hip_monitor_off.csv)), up to 3% lower.
+- **No hardware counters.** Explanations rest on GFLOPS, compiler reports, ISA and the CPU-load experiment.
 
 ## The gap to cuBLAS
 
@@ -228,6 +343,8 @@ The same kernels already run on an AMD device: the test suite passes on this lap
 | Attention | L = 100, d = 64, all rows | The end-to-end pipeline |
 
 GPU results differ from the CPU in about the sixth digit (`max_rel_err` ≈ 1–2 × 10⁻⁶ for GEMM). That is expected: the summation order differs, and the GPU fuses each multiply-add into one rounding. The identity test is the one that must be exact.
+
+The HIP port has its own test program, [`hip/test_hip.cpp`](hip/test_hip.cpp), with the GEMM cases above applied to every compiled configuration in both ownership layouts. It also checks that the limits are taken from the device: a configuration with 64 KB of tiles is accepted on a 64 KB device and rejected on a 48 KB one. **1,128 checks pass on the Radeon 780M** in wave32 and in wave64, and 1,088 pass on the RTX 4060 through HIP's CUDA backend ([logs](results/hip/)). CI does not build the HIP port.
 
 CI ([`ci.yml`](.github/workflows/ci.yml)) runs the same tests on **PoCL**, an OpenCL driver that runs kernels on the CPU, because GitHub's runners have no GPU. CI then smoke-runs the sweep, tuning and plot scripts. CI proves correctness, never speed. One limit: a race such as a missing barrier may not show up on a CPU driver, which is why the tests also run on the GPU before results are committed.
 
@@ -264,6 +381,18 @@ scripts/log_clocks.sh results/clocks_torch.csv &  python reference/torch_ref.py;
 python scripts/plot.py                      # every PNG plus results/clocks_summary.md
 ```
 
+**HIP on the Radeon 780M** (WSL2 Ubuntu 24.04 with ROCm 7.2.4, librocdxg and the 780M's PCI ID in `/opt/rocm/share/rocdxg/dids.conf`, as described [above](#hip-port-on-the-radeon-780m)):
+
+```bash
+export HSA_ENABLE_DXG_DETECTION=1
+cmake -S hip -B build-hip -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1103 -DCMAKE_PREFIX_PATH=/opt/rocm
+cmake --build build-hip && build-hip/test_hip                 # also: -DCLK_HIP_WAVE64=ON
+BENCH=build-hip/bench_hip ROCBLAS_OVERRIDE="11.0.0=build-hip-gfx1100/bench_hip" scripts/hip_sweep.sh
+python3 scripts/hip_resources.py --isa 128,128,16,8,8         # VGPRs, LDS, occupancy, ISA
+```
+
+From Git Bash on Windows, `scripts/opencl_gfx1103.sh` runs the OpenCL side on the same GPU, and `scripts/hip_vs_opencl.sh` runs the interleaved head-to-head (it calls into WSL for the HIP contenders). `build-hip-gfx1100` is a build with `-DCMAKE_HIP_ARCHITECTURES=gfx1100`, which the rocBLAS override needs. The same sources build for NVIDIA with `cmake -S hip -B build-hip-nv -DCLK_HIP_NVIDIA=ON -DCMAKE_CUDA_ARCHITECTURES=89` (a correctness check). The top-level build adds `hip/` with `-DCLK_HIP=ON` (default OFF).
+
 `bench --registers` adds `-cl-nv-verbose` and disables NVIDIA's compiled-kernel cache (`CUDA_CACHE_DISABLE=1`). Without that, a cached build's log contains no ptxas register counts. `bench --ptx FILE` writes the program's PTX, and `bench --build-log` prints the compiler's log.
 
 ## Limitations
@@ -274,3 +403,4 @@ python scripts/plot.py                      # every PNG plus results/clocks_summ
 - The CPU-vs-GPU crossover on the same laptop was not measured (see [above](#cpu-vs-gpu-and-what-copies-cost)). Copies use pageable host memory; pinned buffers would be faster.
 - CLBlast ran with its default parameters, not tuned for this GPU.
 - PoCL in CI checks correctness only, and may miss races that only a GPU exposes.
+- The HIP results on the Radeon 780M depend on one unofficial setup step and an unofficial rocBLAS override, mix API and driver-stack differences, and drift with temperature. See [their own limitations](#limitations-of-the-hip-results).
