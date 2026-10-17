@@ -51,3 +51,18 @@ endif()
 add_executable(test_hip test_hip.cpp)
 target_link_libraries(test_hip PRIVATE clk_hip)
 add_test(NAME hip_gemm COMMAND test_hip)
+
+add_executable(bench_hip bench_hip.cpp)
+target_link_libraries(bench_hip PRIVATE clk_hip)
+
+# rocBLAS, the library ceiling on AMD.
+if(NOT CLK_HIP_NVIDIA)
+  find_package(rocblas CONFIG QUIET)
+  if(rocblas_FOUND)
+    message(STATUS "rocBLAS ${rocblas_VERSION} found: bench_hip --rocblas is available")
+    target_compile_definitions(bench_hip PRIVATE CLK_HAVE_ROCBLAS)
+    target_link_libraries(bench_hip PRIVATE roc::rocblas)
+  else()
+    message(STATUS "rocBLAS not found: bench_hip --rocblas is disabled")
+  endif()
+endif()
