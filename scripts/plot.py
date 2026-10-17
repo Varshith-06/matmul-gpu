@@ -297,6 +297,203 @@ def attention(df, out):
     print("wrote", out / "exp7_attention.png")
 
 
+# --- HIP port on the Radeon 780M (results/hip) -----------------------------------------------------
+
+LANES_780M = 768  # 12 CUs (rocminfo) x 2 SIMD32 x 32 lanes
+
+
+def load_hip(path):
+    """HIP CSVs have one row per configuration and run; no de-duplication (unlike load())."""
+    return pd.read_csv(path) if path.exists() else None
+
+
+def md_table(df):
+    rows = [list(map(str, df.columns))] + [[f"{v:g}" if isinstance(v, float) else str(v) for v in r] for r in df.values]
+    lines = ["| " + " | ".join(rows[0]) + " |", "|" + "---|" * len(rows[0])]
+    return "\n".join(lines + ["| " + " | ".join(r) + " |" for r in rows[1:]])
+
+
+IDLE_MHZ = 900  # the idle probe reads 806-809 MHz (hip_clock.csv); samples above this are "busy"
+
+
+def hip_clock(hipdir, step):
+    """Median, min and max shader clock (MHz) over the busy samples taken while one step ran.
+    The monitor also samples while the host generates inputs and checks results; those idle samples
+    are dropped, as clock_stats() drops nvidia-smi samples below 50% utilization."""
+    path = hipdir / f"hip_clock_{step}.csv"
+    if not path.exists():
+        return None
+    mhz = pd.read_csv(path).mhz
+    mhz = mhz[mhz > IDLE_MHZ]
+    if not len(mhz):
+        return None
+    return {"median": float(mhz.median()), "min": float(mhz.min()), "max": float(mhz.max()), "n": len(mhz)}
+
+
+def hip_peak(mhz, dual=False):
+    return LANES_780M * 2 * mhz / 1000.0 * (2 if dual else 1)
+
+
+def opencl_opts_columns(df):
+    df = df.copy()
+    for k, col in [("TSM", "tsm"), ("TSN", "tsn"), ("TSK", "tsk"), ("WPTM", "wptm"), ("WPTN", "wptn")]:
+        df[col] = df.opts.str.extract(rf"-D{k}=(\d+)")[0].astype(float).astype("Int64")
+    df["contig"] = df.opts.str.contains("CONTIG=1").astype(int)
+    return df
+
+
+def hip_tuning(df, res, out, title):
+    """Same layout as exp3_tuning.png, annotated with the AMD compiler's VGPRs and waves per SIMD."""
+    df = df[(df.contig == 0) & (df.tsm == df.tsn) & (df.wptm == df.wptn)]
+    ns, tsks = sorted(df.n.unique()), [8, 16, 32]
+    tiles, wpts = [32, 64, 128], [2, 4, 8]
+    fig, axes = plt.subplots(len(ns), len(tsks), figsize=(4.4 * len(tsks), 3.9 * len(ns)), squeeze=False)
+    vmax = df.gflops.max()
+    for r, n in enumerate(ns):
+        for c, tsk in enumerate(tsks):
+            ax = axes[r][c]
+            grid = np.full((len(tiles), len(wpts)), np.nan)
+            notes = [["" for _ in wpts] for _ in tiles]
+            for i, t in enumerate(tiles):
+                for j, w in enumerate(wpts):
+                    g = df[(df.n == n) & (df.tsk == tsk) & (df.tsm == t) & (df.wptm == w)]
+                    if not len(g):
+                        continue
+                    grid[i, j] = g.gflops.iloc[0]
+                    reg = g.registers.iloc[0] if "registers" in g else np.nan
+                    note = f"{int(reg)} VGPRs" if pd.notna(reg) else ""
+                    if res is not None:
+                        rr = res[(res.tsm == t) & (res.tsn == t) & (res.tsk == tsk) & (res.wptm == w) & (res.contig == 0)]
+                        if len(rr):
+                            note = f"{int(rr.vgprs.iloc[0])} VGPRs\n{int(rr.waves_per_simd.iloc[0])} waves/SIMD"
+                    notes[i][j] = note
+            im = ax.imshow(grid, cmap="viridis", vmin=0, vmax=vmax, origin="lower")
+            for i in range(len(tiles)):
+                for j in range(len(wpts)):
+                    if np.isnan(grid[i, j]):
+                        ax.text(j, i, "not\nrunnable", ha="center", va="center", fontsize=7, color="0.5")
+                    else:
+                        color = "k" if grid[i, j] > 0.6 * vmax else "w"
+                        ax.text(j, i, f"{grid[i, j]:.0f}\n{notes[i][j]}", ha="center", va="center", fontsize=7, color=color)
+            ax.set_xticks(range(len(wpts)), [f"{w}x{w}" for w in wpts])
+            ax.set_yticks(range(len(tiles)), [str(t) for t in tiles])
+            ax.set(xlabel="work per thread (WPTM x WPTN)", ylabel="tile TSM = TSN", title=f"N = {n}, TSK = {tsk}")
+    fig.colorbar(im, ax=axes, shrink=0.6, label="GFLOPS")
+    fig.suptitle(title)
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print("wrote", out)
+
+
+H2H = [("opencl.csv", "OpenCL gemm_reg (AMD Windows driver)", "-"),
+       ("hip_wave32.csv", "HIP gemm_reg, wave32 (ROCm 7.2.4 on WSL)", "-"),
+       ("hip_wave64.csv", "HIP gemm_reg, wave64", "-"),
+       ("rocblas_gfx1100.csv", "rocBLAS, gfx1100 kernels via HSA_OVERRIDE (unofficial)", "--")]
+
+
+def h2h_table(d):
+    """Per contender and N: median, min and max GFLOPS over the interleaved rounds."""
+    rows = []
+    for f, label, _ in H2H:
+        df = load_hip(d / f)
+        if df is None:
+            continue
+        for n, g in df.groupby("n"):
+            rows.append({"contender": label, "n": n, "rounds": len(g), "median": g.gflops.median(),
+                         "min": g.gflops.min(), "max": g.gflops.max(), "median_ms": g.median_ms.median()})
+    return pd.DataFrame(rows)
+
+
+def hip_ladder(hipdir, out):
+    d = hipdir / "h2h_ladder"
+    t = h2h_table(d) if d.exists() else pd.DataFrame()
+    if t.empty:
+        return
+    fig, ax = plt.subplots(figsize=(7.5, 4.8))
+    for _, label, ls in H2H:
+        g = t[t.contender == label].sort_values("n")
+        if len(g):
+            ax.errorbar(g.n, g["median"], yerr=[g["median"] - g["min"], g["max"] - g["median"]], marker="o",
+                        ls=ls, capsize=3, label=label)
+    clk = hip_clock(d, "h2h")
+    if clk:
+        for dual, style in [(False, ":"), (True, "-.")]:
+            p = hip_peak(clk["median"], dual)
+            ax.axhline(p, color="k", lw=1, ls=style)
+            ax.text(256, p * 1.03, f"{'dual-issue' if dual else 'single-issue'} FP32 peak at the measured "
+                    f"{clk['median']:.0f} MHz: {p:,.0f} GFLOPS", fontsize=7.5)
+    ax.set(xlabel="N", ylabel="GFLOPS (median of interleaved rounds; bars: min to max)",
+           title="FP32 GEMM on the Radeon 780M: 128 x 128 tile, TSK 16, 8 x 8 per thread",
+           xscale="log")
+    ax.set_xticks([256, 512, 1024, 2048, 3072, 4096], ["256", "512", "1024", "2048", "3072", "4096"])
+    ax.legend(fontsize=7.5, loc="lower right")
+    ax.grid(alpha=0.3)
+    save(fig, out)
+
+
+def hip_summary(hipdir):
+    """results/hip/hip_summary.md: clock per step, bandwidth, FMA rate, ownership, monitor check."""
+    lines = ["| Step | Busy clock samples | Median (MHz) | Min | Max | Single-issue peak at median (GFLOPS) |",
+             "|---|---:|---:|---:|---:|---:|"]
+    for sub, step in [("", "tuning"), ("", "ownership"), ("", "ladder"), ("", "rocblas"), ("", "monitorcheck"),
+                      ("wave64", "tuning"), ("wave64", "ladder"), ("repeat", "tuning"), ("repeat", "ladder"),
+                      ("opencl_gfx1103", "tuning"), ("opencl_gfx1103", "ladder"), ("opencl_gfx1103", "ownership"),
+                      ("h2h", "h2h"), ("h2h_ladder", "h2h")]:
+        c = hip_clock(hipdir / sub if sub else hipdir, step)
+        if c:
+            name = f"{sub}/{step}" if sub else step
+            lines.append(f"| {name} | {c['n']} | {c['median']:.0f} | {c['min']:.0f} | {c['max']:.0f} | {hip_peak(c['median']):,.0f} |")
+    text = "\n".join(lines) + "\n"
+    clk = load_hip(hipdir / "hip_clock.csv")
+    if clk is not None:
+        g = clk[clk.t_s > 0.5].groupby("load").mhz.median()
+        text += "\nShort probes (after 0.5 s of load): " + ", ".join(f"{k}: {v:.0f} MHz" for k, v in g.items()) + "\n"
+    for name in ["hip_bandwidth", "hip_fma"]:
+        d = load_hip(hipdir / f"{name}.csv")
+        if d is not None:
+            cols = [c for c in ["kernel", "chains", "mbytes", "median_ms", "gbps", "gflops", "warp_size"] if c in d]
+            text += f"\n{name}:\n\n" + md_table(d[cols]) + "\n"
+    for sub in ["h2h", "h2h_ladder"]:
+        if (hipdir / sub).exists():
+            t = h2h_table(hipdir / sub)
+            if not t.empty:
+                text += f"\n{sub} (interleaved rounds):\n\n" + md_table(t.round(1)) + "\n"
+    hc = load_hip(hipdir / "host_cpu.csv")
+    if hc is not None:
+        text += "\nHost CPU time during a run (host_cpu.csv):\n\n" + md_table(hc) + "\n"
+    for f in ["opencl_cpu_idle", "opencl_cpu_4spin"]:
+        c = load_hip(hipdir / "cpu_load_check" / f"{f}.csv")
+        if c is not None:
+            gf = ", ".join(f"{x:.0f}" for x in c.gflops)
+            text += f"\n{f}: {gf} GFLOPS (median {c.gflops.median():.0f})\n"
+    for off, on in [("hip_monitor_off", "hip_monitor_on")]:
+        a, b = hipdir / f"{off}.csv", hipdir / f"{on}.csv"
+        if a.exists() and b.exists():
+            a, b = pd.read_csv(a), pd.read_csv(b)
+            text += (f"\nMonitor check ({a.config.iloc[0]}, N = {a.n.iloc[0]}): without "
+                     f"{', '.join(f'{x:.0f}' for x in a.gflops)} GFLOPS; with {', '.join(f'{x:.0f}' for x in b.gflops)}\n")
+    (hipdir / "hip_summary.md").write_text(text)
+    print("wrote", hipdir / "hip_summary.md")
+
+
+def hip(results):
+    hipdir = results / "hip"
+    if not hipdir.exists():
+        return
+    for sub, label, rname in [("", "wave32", "hip_resources.csv"), ("wave64", "wave64", "hip_resources_wave64.csv")]:
+        d = load_hip((hipdir / sub if sub else hipdir) / "hip_tuning.csv")
+        if d is not None:
+            r = load_hip(hipdir / rname)
+            hip_tuning(d, r, (hipdir / sub if sub else hipdir) / "hip_tuning.png",
+                       f"HIP kernel 3 on the Radeon 780M, {label} (GFLOPS; VGPRs and waves per SIMD from the compiler)")
+    ocl = load_hip(hipdir / "opencl_gfx1103" / "exp3_tuning.csv")
+    if ocl is not None:
+        hip_tuning(opencl_opts_columns(ocl).assign(registers=np.nan), None, hipdir / "opencl_gfx1103" / "opencl_tuning.png",
+                   "OpenCL kernel 3 on the Radeon 780M (Windows driver; GFLOPS)")
+    hip_ladder(hipdir, hipdir / "hip_ladder.png")
+    hip_summary(hipdir)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", default=str(Path(__file__).resolve().parent.parent / "results"))
@@ -339,6 +536,7 @@ def main():
         roofline(lad, soft, clocks, res)
     if att is not None:
         attention(att, res)
+    hip(res)
 
 
 if __name__ == "__main__":
