@@ -7,7 +7,7 @@ break the kernel's divisibility rules or the device's limits (exit code 3); they
 Writes results/exp3_tuning.csv and the best configuration at the largest N to results/best_reg.txt,
 which scripts/sweep.sh then uses for the ladder.
 
-    python scripts/tune.py [--device "RTX 4060"] [--n 2048 4096] [--reps 20] [--quick]
+    python scripts/tune.py [--device "RTX 4060"] [--n 2048 4096] [--reps 20] [--quick] [--no-clocks]
 """
 
 import argparse
@@ -40,6 +40,8 @@ def main():
     ap.add_argument("--cool", type=float, default=1.0, help="seconds of cool-down between points")
     ap.add_argument("--out", default=str(ROOT / "results"))
     ap.add_argument("--quick", action="store_true", help="small N, 2 reps, any device (CI smoke test)")
+    ap.add_argument("--no-clocks", action="store_true",
+                    help="don't log nvidia-smi clocks (for a non-NVIDIA device)")
     args = ap.parse_args()
     if args.quick:
         args.n, args.reps, args.cool, args.device = [129], 2, 0.0, ""
@@ -51,7 +53,7 @@ def main():
         csv_path.unlink()
 
     clocks = None
-    if not args.quick and shutil.which("nvidia-smi"):  # same query as scripts/log_clocks.sh
+    if not args.quick and not args.no_clocks and shutil.which("nvidia-smi"):  # as log_clocks.sh
         log = open(out / "clocks_tuning.csv", "w")
         clocks = subprocess.Popen(["nvidia-smi", "--query-gpu=" + CLOCK_FIELDS, "--format=csv", "-lms", "500"],
                                   stdout=log)
