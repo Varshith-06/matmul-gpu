@@ -438,7 +438,7 @@ def hip_summary(hipdir):
     for sub, step in [("", "tuning"), ("", "ownership"), ("", "ladder"), ("", "rocblas"), ("", "monitorcheck"),
                       ("wave64", "tuning"), ("wave64", "ladder"), ("repeat", "tuning"), ("repeat", "ladder"),
                       ("opencl_gfx1103", "tuning"), ("opencl_gfx1103", "ladder"), ("opencl_gfx1103", "ownership"),
-                      ("h2h", "h2h"), ("h2h_ladder", "h2h")]:
+                      ("h2h", "h2h"), ("h2h_ladder", "h2h"), ("tiles", "tiles")]:
         c = hip_clock(hipdir / sub if sub else hipdir, step)
         if c:
             name = f"{sub}/{step}" if sub else step

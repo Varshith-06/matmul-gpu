@@ -12,6 +12,7 @@
 | opencl_gfx1103/ownership | 73 | 1798 | 950 | 2245 | 2,762 |
 | h2h/h2h | 162 | 1768 | 925 | 2361 | 2,715 |
 | h2h_ladder/h2h | 141 | 1764 | 926 | 2354 | 2,710 |
+| tiles/tiles | 73 | 2053 | 1307 | 2452 | 3,153 |
 
 Short probes (after 0.5 s of load): fma: 1988 MHz, gemm_reg 128x128 k16 8x8: 1807 MHz, idle: 807 MHz
 
