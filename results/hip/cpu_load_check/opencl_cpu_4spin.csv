@@ -1,0 +1,4 @@
+gpu,driver,kernel,n,rows,cols,opts,local,reps,median_ms,min_ms,gflops,gbps,h2d_ms,d2h_ms,max_rel_err,registers,spill_bytes
+gfx1103,3679.0 (PAL LC),gemm_reg,4096,,,-DTSM=128 -DTSN=128 -DTSK=16 -DWPTM=8 -DWPTN=8,16x16,20,85.084960,80.521640,1615.31,,8.1526,4.4960,2.193e-06,,
+gfx1103,3679.0 (PAL LC),gemm_reg,4096,,,-DTSM=128 -DTSN=128 -DTSK=16 -DWPTM=8 -DWPTN=8,16x16,20,83.194920,81.868360,1652.01,,6.9391,3.9775,2.193e-06,,
+gfx1103,3679.0 (PAL LC),gemm_reg,4096,,,-DTSM=128 -DTSN=128 -DTSK=16 -DWPTM=8 -DWPTN=8,16x16,20,83.990320,82.648800,1636.37,,6.9613,4.0344,2.193e-06,,

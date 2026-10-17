@@ -1,0 +1,18 @@
+gemm_reg_128x128_k16_8x8: main loop, 81 operations (VOPD pairs count twice)
+    64 v_fmac_f32_e32
+     4 ds_load_2addr_b32
+     4 ds_load_2addr_stride64_b32
+     4 s_waitcnt
+     2 v_add_nc_u32_e32
+     1 s_add_i32
+     1 s_cmp_lg_u32
+     1 s_cbranch_scc1
+gemm_reg_128x128_k16_8x8_contig: main loop, 79 operations (VOPD pairs count twice)
+    64 v_fmac_f32_e32
+     4 ds_load_2addr_b32
+     4 s_waitcnt
+     2 v_add_nc_u32_e32
+     2 ds_load_b128
+     1 s_add_i32
+     1 s_cmp_lg_u32
+     1 s_cbranch_scc1

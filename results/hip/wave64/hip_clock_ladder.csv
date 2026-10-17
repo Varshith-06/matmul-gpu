@@ -1,0 +1,27 @@
+gpu,arch,backend,warp_size,cus,wait,load,n,sample,t_s,mhz
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,0,0.003,807
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,1,0.272,808
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,2,0.531,814
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,3,0.788,807
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,4,1.045,807
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,5,1.305,808
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,6,1.561,808
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,7,1.822,814
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,8,2.082,807
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,9,2.340,814
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,10,2.599,813
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,11,2.858,848
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,12,3.117,807
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,13,3.373,807
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,14,3.630,1797
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,15,3.897,1774
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,16,4.156,1758
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,17,4.414,807
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,18,4.673,808
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,19,4.931,1779
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,20,5.191,1818
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,21,5.450,1747
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,22,5.707,808
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,23,5.965,1803
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,24,6.223,1833
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,idle,0,25,6.486,1997

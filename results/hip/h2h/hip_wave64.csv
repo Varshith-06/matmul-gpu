@@ -1,0 +1,11 @@
+gpu,arch,backend,warp_size,cus,wait,kernel,config,tsm,tsn,tsk,wptm,wptn,contig,threads,n,reps,median_ms,min_ms,gflops,h2d_ms,d2h_ms,max_rel_err,registers,scratch_bytes,lds_bytes,blocks_per_cu
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,gemm_reg,128x128 k16 8x8,128,128,16,8,8,0,256,2048,20,11.2621,10.8762,1525.5,5.9674,3.3168,1.21e-06,119,0,16384,4
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,gemm_reg,128x128 k16 8x8,128,128,16,8,8,0,256,4096,20,94.7742,90.7122,1450.2,17.6980,7.4942,2.47e-06,119,0,16384,4
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,gemm_reg,128x128 k16 8x8,128,128,16,8,8,0,256,2048,20,10.9706,10.4581,1566.0,6.1889,3.0103,1.21e-06,119,0,16384,4
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,gemm_reg,128x128 k16 8x8,128,128,16,8,8,0,256,4096,20,93.6083,91.8735,1468.2,18.7076,8.7919,2.47e-06,119,0,16384,4
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,gemm_reg,128x128 k16 8x8,128,128,16,8,8,0,256,2048,20,11.4601,11.0173,1499.1,6.6098,3.4573,1.21e-06,119,0,16384,4
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,gemm_reg,128x128 k16 8x8,128,128,16,8,8,0,256,4096,20,94.7960,92.5241,1449.8,18.8519,9.7143,2.47e-06,119,0,16384,4
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,gemm_reg,128x128 k16 8x8,128,128,16,8,8,0,256,2048,20,11.4899,11.2922,1495.2,8.1094,3.9260,1.21e-06,119,0,16384,4
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,gemm_reg,128x128 k16 8x8,128,128,16,8,8,0,256,4096,20,98.2599,95.5931,1398.7,19.9656,10.7149,2.47e-06,119,0,16384,4
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,gemm_reg,128x128 k16 8x8,128,128,16,8,8,0,256,2048,20,11.3292,11.0632,1516.4,7.0561,3.2548,1.21e-06,119,0,16384,4
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,64,6,spin,gemm_reg,128x128 k16 8x8,128,128,16,8,8,0,256,4096,20,99.4445,95.9252,1382.1,21.7686,8.3292,2.47e-06,119,0,16384,4

@@ -1,0 +1,18 @@
+name                AMD Radeon(TM) Graphics
+arch                gfx1103
+backend             hip-amd
+runtime / driver    70253211 / 70253211
+multiProcessorCount 6
+warpSize            32 (device default)
+compiled wave size  32
+clockRate           2700000 kHz (reported maximum)
+wall clock rate     100000 kHz
+maxThreadsPerBlock  1024
+sharedMemPerBlock   65536
+regsPerBlock        131072
+maxThreadsPerMP     2048
+totalGlobalMem      8246 MB
+memoryClockRate     2800000 kHz
+memoryBusWidth      128 bits
+l2CacheSize         2097152 B
+integrated          0

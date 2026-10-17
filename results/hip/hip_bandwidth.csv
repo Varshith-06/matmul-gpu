@@ -1,0 +1,6 @@
+gpu,arch,backend,warp_size,cus,wait,kernel,mbytes,reps,median_ms,min_ms,gbps
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,32,6,spin,copy,4,20,0.1256,0.1181,66.8
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,32,6,spin,copy,16,20,0.5730,0.5563,58.6
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,32,6,spin,copy,64,20,2.2503,2.1355,59.6
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,32,6,spin,copy,256,20,9.9554,9.3906,53.9
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,32,6,spin,copy,1024,20,37.6277,36.2378,57.1

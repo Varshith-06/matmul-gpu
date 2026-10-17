@@ -1,0 +1,10 @@
+gpu,arch,backend,warp_size,cus,wait,load,n,sample,t_s,mhz
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,32,6,spin,idle,0,0,0.002,806
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,32,6,spin,idle,0,1,0.271,1028
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,32,6,spin,idle,0,2,0.528,1666
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,32,6,spin,idle,0,3,0.784,1794
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,32,6,spin,idle,0,4,1.041,1707
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,32,6,spin,idle,0,5,1.298,1648
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,32,6,spin,idle,0,6,1.570,1860
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,32,6,spin,idle,0,7,1.849,1818
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,32,6,spin,idle,0,8,2.110,1712

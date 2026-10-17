@@ -1,0 +1,4 @@
+gpu,arch,backend,warp_size,cus,wait,kernel,chains,block,blocks,reps,median_ms,min_ms,gflops
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,32,6,spin,fma_sgpr,8,1024,384,20,16.2705,15.6603,1583.8
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,32,6,spin,fma_vgpr,8,1024,384,20,8.7831,8.6742,2934.0
+AMD Radeon(TM) Graphics,gfx1103,hip-amd,32,6,spin,fma_vgpr,16,1024,384,20,17.5757,16.5923,2932.4
